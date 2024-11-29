@@ -3,7 +3,7 @@
 #include <LittleFS.h>  // must be before GyverPortal
 #include <GyverPortal.h>
 #include <Ethernet.h>
-#include <WebServer_WT32_ETH01.h>
+#include <ETH.h>
 #include <GyverShift.h>
 #include <GyverOLED.h>
 #include <StringUtils.h>
@@ -41,11 +41,11 @@
 
 #define INPUT_IPV4_ID "ipv4_inp"
 #define INPUT_IPV4_MASK_ID "ipv4_mask_inp"
+#define INPUT_GW_ID "gw_inp"
 #define INPUT_MAC_ID "mac_inp"
+#define INPUT_TELNET_PORT_ID "tel_inp"
 #define INPUT_TITLE_ID "title_inp"
 
-//#define UHOST_PFX "uh"
-//#define UDEV_PFX "udev"
 #define SW_ENABLE "ena"
 #define SEL_HOST "sel_h"
 #define SEL_DEVICE "sel_d"
@@ -53,6 +53,7 @@
 #define BUTTON_RESET_ID "reset_btn"
 #define POPUP_RESET_CONFIRM_ID "reset_cnfrm"
 #define BUTTON_SAVE_ID "save_btn"
+#define BUTTON_RESTART_ID "restart_btn"
 #define BUTTON_CLEAR_ALL_ID "clear_all_btn"
 
 #define TITLE_MAX_LEN 32
@@ -60,7 +61,7 @@
 struct Data {  // 512 bytes
   uint32_t ipv4;
   uint32_t mask;
-  uint8_t res[4];
+  uint32_t gw;
   uint8_t mac[ETH_ADDR_LEN];
   char title[TITLE_MAX_LEN];
   uint8_t reserved[320];
@@ -117,6 +118,8 @@ bool validIpMask(const IPAddress& mask) {
   return true;
 }
 
+void (*resetFunc)(void) = 0;
+
 void uiBuild() {
   GP.BUILD_BEGIN(GP_DARK, 600);
 
@@ -147,16 +150,20 @@ void uiBuild() {
       GP.LABEL("IP mask");
       GP.TEXT(INPUT_IPV4_MASK_ID, "", IPAddress(nvData.mask).toString()));
     M_BOX(
+      GP.LABEL("IP gateway");
+      GP.TEXT(INPUT_GW_ID, "", IPAddress(nvData.gw).toString()));
+    M_BOX(
       GP.LABEL("MAC address");
       GP.TEXT(INPUT_MAC_ID, "", mac2String(nvData.mac)));
     M_BOX(
+      GP.LABEL("Telnet port");
+      GP.TEXT(INPUT_TELNET_PORT_ID, "", String(TELNET_PORT), "", 0, "", true));
+    M_BOX(
       GP.LABEL("Custom title");
       GP.TEXT(INPUT_TITLE_ID, "", String(nvData.title), "", TITLE_MAX_LEN));
-    M_BOX(
-      GP.LABEL("Telnet port");
-      GP.TEXT("tport", "", String(TELNET_PORT), "", 0, "", true));
 
-    GP.SUBMIT("Save to NV");
+    GP.SUBMIT_MINI("Save to NV");
+    GP.BUTTON_MINI(BUTTON_RESTART_ID, "Restart");
     GP.BUTTON_MINI(BUTTON_RESET_ID, "Reset to defaults", "", GP_RED);
     GP.FORM_END();
 
@@ -165,29 +172,12 @@ void uiBuild() {
 
   } else if (ui.uri("/upgrade")) {
     GP.OTA_FIRMWARE("Firmware", GP_GREEN, true);
-    // GP.OTA_FILESYSTEM("FS", GP_GREEN, true);
+
   } else {  //home page
     GP_MAKE_BLOCK(
       GP.LABEL("Enable");
       GP.SWITCH(SW_ENABLE, GetEnabled()););
-    /*
-    M_BLOCK_TAB(
-      "USB host",
-      for (uint8_t i = 0; i < USB_HOSTS_COUNT; i++) {
-        GP.RADIO(UHOST_PFX, i, GetHostsState());
-        GP.LABEL(String(i + 1), "", i < 4 ? GP_VIOL : GP_DEFAULT);
-      });
 
-    M_BLOCK_TAB(
-      "USB device",
-      for (uint8_t i = 0; i < USB_DEVICES_COUNT; i++) {
-        GP.RADIO(UDEV_PFX, i, GetDevicesState());
-        GP.LABEL(String(i + 1), "", i < 4 ? GP_VIOL : GP_DEFAULT);
-        if (i % 8 == 7) {
-          GP.BREAK();
-        }
-      });
-*/
     M_BLOCK_TAB(
       "",
       GP.LABEL("Host:");
@@ -199,10 +189,6 @@ void uiBuild() {
 
     String s;
 
-    //   s += UDEV_PFX;
-    //   s += ',';
-    //   s += UHOST_PFX;
-    //   s += ',';
     s += SW_ENABLE;
     s += ',';
     s += SEL_HOST;
@@ -224,20 +210,21 @@ void uiAction() {
     if (ui.click(SW_ENABLE)) {
       SetEnable(ui.getBool());
 
+    } else if (ui.click(POPUP_RESET_CONFIRM_ID)) {
+      if (ui.getBool()) {
+        eraseNv();
+      }
     } else if (ui.click(BUTTON_CLEAR_ALL_ID)) {
       jeromeSetAll(0);
-
-      /*    } else if (ui.clickInt(UHOST_PFX, valRad)) {
-      SelectHost(valRad);
-
-    } else if (ui.clickInt(UDEV_PFX, valRad)) {
-      SelectDevice(valRad);*/
 
     } else if (ui.clickInt(SEL_HOST, valRad)) {
       SelectHost(valRad);
 
     } else if (ui.clickInt(SEL_DEVICE, valRad)) {
       SelectDevice(valRad);
+
+    } else if (ui.click(BUTTON_RESTART_ID)) {
+      resetFunc();
     }
   }
 
@@ -249,8 +236,6 @@ void uiAction() {
       ui.answer(GetEnabled());
     }
 
-    //ui.updateInt(UHOST_PFX, GetHostsState());
-    //ui.updateInt(UDEV_PFX, GetDevicesState());
     ui.updateInt(SEL_HOST, GetHostsState());
     ui.updateInt(SEL_DEVICE, GetDevicesState());
   }
@@ -282,6 +267,17 @@ void uiAction() {
         } else {
           Serial.print("invalid IP mask: ");
           Serial.println(val);
+        }
+      }
+
+      val = ui.getString(INPUT_GW_ID);
+
+      if (!val.isEmpty()) {
+        IPAddress ip;
+
+        if (ip.fromString(val)) {
+          nvData.gw = ip;
+          changed = true;
         }
       }
 
@@ -541,11 +537,7 @@ void onTelnetInput(String str) {
 }
 
 void setupTelnet() {
-  // passing on functions for various telnet events
   telnet.onConnect(onTelnetConnect);
-  //telnet.onConnectionAttempt(onTelnetConnectionAttempt);
-  //telnet.onReconnect(onTelnetReconnect);
-  //telnet.onDisconnect(onTelnetDisconnect);
   telnet.onInputReceived(onTelnetInput);
 
   Serial.print("Telnet: ");
@@ -598,6 +590,10 @@ void setupNv() {
     nvData.mask = IPAddress(255, 255, 255, 0);
   }
 
+  if (nvData.gw == 0 || !nvOk) {
+    nvData.gw = IPAddress(192, 168, 1, 1);
+  }
+
   if ((nvData.mac[0] == 0 && nvData.mac[1] == 0
        && nvData.mac[2] == 0 && nvData.mac[3] == 0
        && nvData.mac[4] == 0 && nvData.mac[5] == 0)
@@ -623,6 +619,8 @@ void setupNv() {
   Serial.print(IPAddress(nvData.ipv4));
   Serial.print("/");
   Serial.println(IPAddress(nvData.mask));
+  Serial.print("GW IPv4 ");
+  Serial.println(IPAddress(nvData.gw));
   Serial.print("NV MAC: ");
   Serial.println(mac2String(nvData.mac));
 }
@@ -643,7 +641,6 @@ void setupWdt() {
 void tickWdt() {
   if (millis() - lastWdt >= 2000) {
     loopCounter++;
-    // Serial.println("Resetting WDT...");
     digitalWrite(WDT_LED_GPIO, loopCounter % 2);
     esp_task_wdt_reset();
     lastWdt = millis();
@@ -697,11 +694,11 @@ void setup() {
   Serial.println(WiFi.localIP());*/
 
   // To be called before ETH.begin()
-  WT32_ETH01_onEvent();
+  //Network.onEvent(onEvent);
 
   esp_iface_mac_addr_set(nvData.mac, ESP_MAC_ETH);
   ETH.begin();
-  ETH.config(IPAddress(nvData.ipv4), IPAddress(nvData.ipv4), IPAddress(nvData.mask));
+  ETH.config(IPAddress(nvData.ipv4), IPAddress(nvData.gw), IPAddress(nvData.mask));
 
   setupWdt();
   setupUi();
