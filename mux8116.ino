@@ -11,7 +11,9 @@
 #include <ESPTelnet.h>
 
 #define PROJECT_NAME "MUX8116"
-#define FIRMWARE_VERSION "1.0"
+#define FIRMWARE_VERSION "1.2"
+
+#define DISPLAY_INSTALLED
 
 #define WDT_TIMEOUT 15
 
@@ -118,7 +120,9 @@ bool validIpMask(const IPAddress& mask) {
   return true;
 }
 
-void (*resetFunc)(void) = 0;
+void resetFunc(void) {
+  ESP.restart();
+}
 
 void uiBuild() {
   GP.BUILD_BEGIN(GP_DARK, 600);
@@ -345,6 +349,32 @@ void SelectDevice(int num) {
   Sync();
 }
 
+bool Select(bool enable, int host, int device) {
+  if (host < 1 || host > 8)
+    return false;
+
+  if (device < 1 || device > 16)
+    return false;
+
+  jeromeOutput[0] = enable;
+
+  host--;
+  device--;
+
+  jeromeOutput[1] = host & 1ul << 0;
+  jeromeOutput[2] = host & 1ul << 1;
+  jeromeOutput[3] = host & 1ul << 2;
+
+  jeromeOutput[4] = device & 1ul << 0;
+  jeromeOutput[5] = device & 1ul << 1;
+  jeromeOutput[6] = device & 1ul << 2;
+  jeromeOutput[7] = device & 1ul << 3;
+
+  Sync();
+
+  return true;
+}
+
 void Sync() {
   for (int i = 0; i < 8; i++) {
     shiftRegister[i] = jeromeOutput[i];
@@ -423,7 +453,7 @@ void onTelnetInput(String str) {
   str.toUpperCase();
 
   // disconnect the client
-  if (str == "bye") {
+  if (str == "BYE") {
     telnet.println("> disconnecting you...");
     telnet.disconnectClient();
 
@@ -487,7 +517,7 @@ void onTelnetInput(String str) {
             jeromeSet(i + 1, 0);
             affected++;
 
-          } else if (c == 'x' || c == 'X') {
+          } else if (c == 'X') {
             ;  //skip item
           } else {
             telnet.println("#ERR");
@@ -530,6 +560,19 @@ void onTelnetInput(String str) {
 
         return;
       }
+    } else if (argv[1] == "USB" && argc == 5) {
+      const bool state = (argv[2] == "ON" || argv[2] == "1");
+      const int32_t host = argv[3].toInt();
+      const int32_t device = argv[4].toInt();
+
+      if (Select(state, host, device)) {
+        telnet.print("#USB,OK");
+
+        return;
+      }
+
+    } else if (argv[1] == "RST" && argc == 2) {
+      resetFunc();
     }
   }
 
@@ -655,12 +698,15 @@ void setupUi() {
 }
 
 void setupDisplay() {
+#ifdef DISPLAY_INSTALLED
   oled.init(SDA_PIN, SCL_PIN);
   oled.invertText(false);
   oled.clear();
+#endif
 }
 
 void updateDisplay() {
+#ifdef DISPLAY_INSTALLED
   oled.clear();
   oled.home();
   oled.setScale(2);
@@ -671,8 +717,12 @@ void updateDisplay() {
   oled.clear();
   oled.print(text.c_str());
   oled.setScale(1);
-  oled.setCursorXY(0, 21);
+  //oled.setCursorXY(0, 21);
+  oled.setCursor(0, 2);
   oled.print(ETH.localIP());
+  oled.setCursor(0, 3);
+  oled.print(nvData.title);
+#endif
 }
 
 void setup() {
@@ -697,6 +747,7 @@ void setup() {
   //Network.onEvent(onEvent);
 
   esp_iface_mac_addr_set(nvData.mac, ESP_MAC_ETH);
+  esp_netif_dhcpc_stop(ETH.netif());
   ETH.begin();
   ETH.config(IPAddress(nvData.ipv4), IPAddress(nvData.gw), IPAddress(nvData.mask));
 
